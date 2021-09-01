@@ -52,7 +52,7 @@ class AUnet(nn.Module):
         ############# shared unet layers ###############
         ################################################
 
-        # down sample layers
+        #### down sample layers ####
         self.global_downsample = nn.ModuleList()
         self.global_downsample_conv = nn.ModuleList() 
         # first pooling layer
@@ -73,7 +73,7 @@ class AUnet(nn.Module):
             )
 
 
-        # bottleneck
+        #### bottleneck ####
         self.global_bottleneck = nn.ModuleList([
             ConvBlock(filters[-2], filters[-1], drop_prob)
             ])
@@ -81,7 +81,7 @@ class AUnet(nn.Module):
             ConvBlock(filters[-1], filters[-1], drop_prob)
         ])
 
-        # up sample layers
+        #### up sample layers ####
         self.global_uptranspose = nn.ModuleList()
         # post-skip connection concat conv layers
         self.global_upsample_conv = nn.ModuleList()
@@ -114,30 +114,71 @@ class AUnet(nn.Module):
         self.upsample_att = nn.ModuleList()
         self.downsample_att_conv = nn.ModuleList()
         self.upsample_att_conv = nn.ModuleList()
+        self.bottleneck_att = nn.ModuleList()
+        self.bottleneck_att_conv = nn.ModuleList()
+
+        #### downsampling layers ####
+        for idx_task in range(decoder_heads):
+            # att filter layers are lists within a list [idx_task][idx_layer]
+            # create [idx_task] list and add att filter for first layer
+            self.downsample_att.append(
+                nn.ModuleList([AttBlock([filters[0], filters[0]])])
+                )
+
+            # add rest of att filters
+            for idx_layer in range(num_pool_layers - 1):
+                self.downsample_att[idx_task].append(
+                    AttBlock([
+                        2 * filters[idx_layer + 1], 
+                        filters[idx_layer + 1]
+                    ])
+                )
+        
+        # att conv block layers (shared between tasks, in accordance w MTAN)
+        # subject to change; maybe it will be best to split this part
+        for idx_layer in range(num_pool_layers):
+            self.downsample_att_conv.append(
+                ConvBlock(filters[idx_layer], filters[idx_layer + 1])
+                )
+
+
+        #### bottleneck ####
+        for idx_task in range(decoder_heads):
+            # att filter layers are lists within a list [idx_task][idx_layer]
+            # create [idx_task] list and add att filter for bottleneck's single layer
+            self.bottleneck_att.append(
+                nn.ModuleList([AttBlock([2 * filters[-1], filters[-1]])])
+                )
+        
+        # att conv block layers (shared between tasks, in accordance w MTAN)
+        # single bottleneck layer
+        self.bottleneck_att_conv.append(
+            ConvBlock(filters[-1], filters[-1])
+            )
+
+
+        #### downsampling layers ####
+        # att conv block layers (shared between tasks, in accordance w MTAN)
+        for idx_layer in reversed(range(num_pool_layers)):
+            self.downsample_att_conv.append(nn.Sequential(
+                TransposeConvBlock(filters[idx_layer + 1], filters[idx_layer]),
+                ConvBlock(filters[idx_layer], filters[idx_layer]),
+            ))
 
         for idx_task in range(decoder_heads):
-            # att layers are lists within a list [idx_task][idx_layer]
-            self.downsample_att.append(
-                nn.ModuleList([AttBlock([filters[0], filters[0], filters[0]])])
+            # att filter layers are lists within a list [idx_task][idx_layer]
+            # create [idx_task] list; filters follow similar pattern so not creating here
+            self.downsample_att.append(nn.ModuleList())
+
+            # add all att filters at once
+            for idx_layer in reversed(range(num_pool_layers)):
+                self.downsample_att[idx_task].append(
+                    AttBlock([
+                        filters[idx_layer + 1],
+                        filters[idx_layer]
+                    ])
                 )
-            self.upsample_att.append(
-                nn.ModuleList([AttBlock([2 * filters[0], filters[0], filters[0]])])
-                )
-
-            for idx_layer in range(num_pool_layers):
-                # att layers
-                self.downsample_att[idx_task].append(self.att_layer([2 * filters[i + 1], filters[i + 1], filters[i + 1]]))
-                self.upsample_att[idx_task].append(self.att_layer([filters[i + 1] + filters[i], filters[i], filters[i]]))
-
-                # att conv block layers
-
-        for i in range(4):
-            if i < 3:
-                self.encoder_block_att.append(self.conv_layer([filter[i + 1], filter[i + 2]]))
-                self.decoder_block_att.append(self.conv_layer([filter[i + 1], filter[i]]))
-            else:
-                self.encoder_block_att.append(self.conv_layer([filter[i + 1], filter[i + 1]]))
-                self.decoder_block_att.append(self.conv_layer([filter[i + 1], filter[i + 1]]))
+        
 
 
     def forward(
@@ -270,7 +311,7 @@ class AttBlock(nn.Module):
     1x1 conv, Norom, Sigmoid
     """
 
-    def __init__(self, in_chans: int, chans: int, out_chans: int):
+    def __init__(self, in_chans: int, out_chans: int):
         """
         Args:
             in_chans: Number of channels in the input.
@@ -280,15 +321,14 @@ class AttBlock(nn.Module):
         super().__init__()
 
         self.in_chans = in_chans
-        self.chans = chans
         self.out_chans = out_chans
         
         self.layers = nn.Sequential(
-            nn.Conv2d(in_chans, chans, kernel_size = 1, padding = 0),
-            nn.InstanceNorm2d(chans),
+            nn.Conv2d(in_chans, out_chans, kernel_size = 1, padding = 0),
+            nn.InstanceNorm2d(out_chans),
             nn.LeakyReLU(negative_slope = 0.2, inplace = True),
-            nn.Conv2d(chans, out_chans, kernel_size = 1, padding = 0),
-            nn.InstanceNorm2d(chans),
+            nn.Conv2d(out_chans, out_chans, kernel_size = 1, padding = 0),
+            nn.InstanceNorm2d(out_chans),
             nn.Sigmoid(),
         )
 
