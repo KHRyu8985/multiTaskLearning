@@ -7,6 +7,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+import numpy as np
+
 from typing import List
 
 
@@ -43,6 +45,7 @@ class AUnet(nn.Module):
         self.chans = chans
         self.num_pool_layers = num_pool_layers
         self.drop_prob = drop_prob
+        self.decoder_heads = decoder_heads
 
         filters = [
             chans * 2 ** layer for layer in range(num_pool_layers + 1)
@@ -111,14 +114,14 @@ class AUnet(nn.Module):
         ############ task attention layers #############
         ################################################
         self.downsample_att = nn.ModuleList()
-        self.upsample_att = nn.ModuleList()
         self.downsample_att_conv = nn.ModuleList()
+        self.upsample_att = nn.ModuleList()
         self.upsample_att_conv = nn.ModuleList()
         self.bottleneck_att = nn.ModuleList()
         self.bottleneck_att_conv = nn.ModuleList()
 
         #### downsampling layers ####
-        for idx_task in range(decoder_heads):
+        for idx_task in range(self.decoder_heads):
             # att filter layers are lists within a list [idx_task][idx_layer]
             # create [idx_task] list and add att filter for first layer
             self.downsample_att.append(
@@ -143,8 +146,8 @@ class AUnet(nn.Module):
 
 
         #### bottleneck ####
-        for idx_task in range(decoder_heads):
-            # att filter layers are lists within a list [idx_task][idx_layer]
+        for idx_task in range(self.decoder_heads):
+            # att filter layers are lists within a list [idx_task]
             # create [idx_task] list and add att filter for bottleneck's single layer
             self.bottleneck_att.append(
                 nn.ModuleList([AttBlock([2 * filters[-1], filters[-1]])])
@@ -157,22 +160,22 @@ class AUnet(nn.Module):
             )
 
 
-        #### downsampling layers ####
+        #### upsampling layers ####
         # att conv block layers (shared between tasks, in accordance w MTAN)
         for idx_layer in reversed(range(num_pool_layers)):
-            self.downsample_att_conv.append(nn.Sequential(
+            self.upsample_att_conv.append(nn.Sequential(
                 TransposeConvBlock(filters[idx_layer + 1], filters[idx_layer]),
                 ConvBlock(filters[idx_layer], filters[idx_layer]),
             ))
 
-        for idx_task in range(decoder_heads):
+        for idx_task in range(self.decoder_heads):
             # att filter layers are lists within a list [idx_task][idx_layer]
             # create [idx_task] list; filters follow similar pattern so not creating here
-            self.downsample_att.append(nn.ModuleList())
+            self.upsample_att.append(nn.ModuleList())
 
             # add all att filters at once
             for idx_layer in reversed(range(num_pool_layers)):
-                self.downsample_att[idx_task].append(
+                self.upsample_att[idx_task].append(
                     AttBlock([
                         filters[idx_layer + 1],
                         filters[idx_layer]
@@ -193,41 +196,189 @@ class AUnet(nn.Module):
         Returns:
             Output tensor of shape `(N, out_chans, H, W)`.
         """
-        
+        # create lists to hold intermediate values
+
+        #### global ####
+        g_avgpool, g_unpool = (
+            np.zeros([self.num_pool_layers])
+            for _ in range(2)
+        )
+    
+
+        # down/up-sample have structure [idx_layer][idx_intermediate]
+        # 2 intermediate tasks
+        g_downsample, g_upsample = (
+            np.zeros([self.num_pool_layers, 2])
+            for _ in range(2)
+        )
+
+        g_bottleneck = np.zeros([2])
+
+        #### task-specific ####
+        # atten down/up-sample have structure [idx_layer][idx_intermediate]
+        # atten bottleneck has structure [idx_intermediate]
+        # three intermediate steps
+        atten_downsample, atten_upsample = (
+            np.zeros([self.num_pool_layers, 3])
+            for _ in range(2)
+        )
+        atten_bottleneck = np.zeros([3])
+
+        # convert np to lists
+        (
+            g_downsample, g_upsample,
+            g_avgpool, g_unpool, g_bottleneck,
+            atten_downsample, atten_upsample,
+            atten_bottleneck 
+        ) = (
+            g_downsample.tolist(), g_upsample.tolist(),
+            g_avgpool.tolist(), g_unpool.tolist(), g_bottleneck.tolist(),
+            atten_downsample.tolist(), atten_upsample.tolist(),
+            atten_bottleneck.tolist() 
+        ) 
+
+        # for skip connections
         stack = []
-        output = image
+
+
+        # actual forward
+
+        #### global ####
 
         # apply down-sampling layers
-        for layer in self.down_sample_layers:
-            output = layer(output)
-            stack.append(output)
+        for idx_layer in range(self.num_pool_layers):
+            # if first layer, use input image
+            if idx_layer == 0:
+                g_downsample[idx_layer][0] = self.global_downsample[idx_layer](image)
+            else:
+                g_downsample[idx_layer][0] = self.global_downsample[idx_layer](
+                    g_avgpool[idx_layer - 1]
+                    )
+            # go thru convs        
+            g_downsample[idx_layer][1] = self.global_downsample_conv[idx_layer](
+                g_downsample[idx_layer][0]
+                )
+            # for global skip connection
+            stack.append(g_downsample[idx_layer][1])
             
-            output = F.avg_pool2d(output, kernel_size=2, stride=2, padding=0)
+            g_avgpool[idx_layer] = F.avg_pool2d(
+                g_downsample[idx_layer][1], kernel_size=2, stride=2, padding=0
+                )
 
-        for layer in self.conv:
-            output = layer(output)
-
+        # bottleneck
+        g_bottleneck[0] = self.global_bottleneck(g_avgpool[-1])
+        g_bottleneck[1] = self.global_bottleneck_conv(g_bottleneck[0])
+        # no pooling, and global_bottleneck_conv changes channel count for global only
+        
         # apply up-sampling layers
-        for idx_upsample, (transpose_conv, conv) in enumerate(zip(
-            self.up_transpose_convs[int_contrast], 
-            self.up_convs[int_contrast],
-        )):
-            downsample_layer = stack[-(idx_upsample + 1)]
-            output = transpose_conv(output)
+        for idx_layer in range(self.num_pool_layers):
+
+            # if first layer, use bottleneck output
+            if idx_layer == 0:
+                g_upsample[idx_layer][0] = self.global_upsample[idx_layer](g_bottleneck[-1])
+            else:
+                g_upsample[idx_layer][0] = self.global_upsample[idx_layer](
+                    g_upsample[idx_layer - 1][-1]
+                    )
+            
+            # skip connection
+            downsample_layer = stack[-(idx_layer + 1)]
 
             # reflect pad on the right/botton if needed to handle odd input dimensions
             padding = [0, 0, 0, 0]
-            if output.shape[-1] != downsample_layer.shape[-1]:
+            if g_upsample[idx_layer][0].shape[-1] != downsample_layer.shape[-1]:
                 padding[1] = 1  # padding right
-            if output.shape[-2] != downsample_layer.shape[-2]:
+            if g_upsample[idx_layer][0].shape[-2] != downsample_layer.shape[-2]:
                 padding[3] = 1  # padding bottom
             if torch.sum(torch.tensor(padding)) != 0:
-                output = F.pad(output, padding, "reflect")
-            
-            output = torch.cat([output, downsample_layer], dim=1)
-            output = conv(output)
+                g_upsample[idx_layer][0] = F.pad(g_upsample[idx_layer][0], padding, "reflect")
 
-        return output
+            # go thru convs        
+            g_upsample[idx_layer][1] = self.global_upsample_conv[idx_layer](
+                # actually concat skip connection w upsampling
+                torch.cat([g_upsample[idx_layer][0], downsample_layer], dim=1)
+                )
+
+
+        #### task-specific ####
+        # downsampling layers
+        for idx_layer in range(self.num_pool_layers):
+            # if first layer, no merge step
+            if idx_layer == 0:
+                atten_downsample[idx_layer][0] = self.downsample_att[int_contrast][idx_layer](
+                    g_downsample[idx_layer][0]
+                )
+            else:
+                atten_downsample[idx_layer][0] = self.downsample_att[int_contrast][idx_layer](
+                    # merge att and global
+                    torch.cat(
+                        (g_downsample[idx_layer][0], atten_downsample[idx_layer - 1][2]),
+                        dim=1
+                        )
+                )
+            atten_downsample[idx_layer][1] = (atten_downsample[idx_layer][0]) * g_downsample[idx_layer][1]
+            atten_downsample[idx_layer][2] = self.downsample_att_conv[idx_layer](
+                atten_downsample[idx_layer][1]
+            )
+            atten_downsample[idx_layer][2] = F.avg_pool2d(
+                atten_downsample[idx_layer][2], kernel_size=2, stride=2, padding=0
+                )
+        
+        # bottleneck
+        atten_bottleneck[0] = self.bottleneck_att[int_contrast](
+            # merge att and global
+            torch.cat(
+                (g_bottleneck[0], atten_downsample[-1][-1]),
+                dim=1
+                )
+        )
+        atten_bottleneck[1] = (atten_bottleneck[-1][0]) * g_bottleneck[1]
+        atten_bottleneck[2] = self.bottleneck_att_conv(
+            atten_bottleneck[1]
+        )
+        # no pooling bc it's bottleneck. 
+
+        # upsampling layers
+        for idx_layer in range(self.num_pool_layers):
+            # if first layer, use bottleneck output
+            if idx_layer == 0:
+                atten_upsample[idx_layer][0] = self.upsample_att_conv[int_contrast][idx_layer](
+                    atten_bottleneck[-1]
+                )
+            else:
+                atten_upsample[idx_layer][0] = self.upsample_att_conv[int_contrast][idx_layer](
+                    atten_upsample[idx_layer - 1][-1]
+                )
+            
+            atten_upsample[idx_layer][1] = self.upsample_att[idx_layer](
+                torch.cat(
+                    (g_upsample[idx_layer], atten_upsample[idx_layer][0]),
+                    dim=1,
+                )
+            )
+            atten_upsample[idx_layer][2] = (atten_upsample[idx_layer][1]) * g_upsample[idx_layer][-1]
+
+        return atten_upsample[-1][-1]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
