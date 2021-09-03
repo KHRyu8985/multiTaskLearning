@@ -12,7 +12,7 @@ import numpy as np
 from typing import List
 
 
-class AUnet(nn.Module):
+class AttUnet(nn.Module):
     """
     PyTorch implementation of a U-Net model with attention.
     attention in downsampling, bottleneck, and upsampling
@@ -93,6 +93,7 @@ class AUnet(nn.Module):
             self.global_uptranspose.append(
                 TransposeConvBlock(filters[idx_layer + 1], filters[idx_layer])
                 )
+        
             # ConvBlock is one unit block at a time now
             self.global_upsample_conv.append(nn.Sequential(
                 ConvBlock(filters[idx_layer + 1], filters[idx_layer], drop_prob),
@@ -125,23 +126,23 @@ class AUnet(nn.Module):
             # att filter layers are lists within a list [idx_task][idx_layer]
             # create [idx_task] list and add att filter for first layer
             self.downsample_att.append(
-                nn.ModuleList([AttBlock([filters[0], filters[0]])])
+                nn.ModuleList([AttBlock(filters[0], filters[0])])
                 )
 
             # add rest of att filters
             for idx_layer in range(num_pool_layers - 1):
                 self.downsample_att[idx_task].append(
-                    AttBlock([
+                    AttBlock(
                         2 * filters[idx_layer + 1], 
                         filters[idx_layer + 1]
-                    ])
+                    )
                 )
         
         # att conv block layers (shared between tasks, in accordance w MTAN)
         # subject to change; maybe it will be best to split this part
         for idx_layer in range(num_pool_layers):
             self.downsample_att_conv.append(
-                ConvBlock(filters[idx_layer], filters[idx_layer + 1])
+                ConvBlock(filters[idx_layer], filters[idx_layer + 1], drop_prob)
                 )
 
 
@@ -150,13 +151,13 @@ class AUnet(nn.Module):
             # att filter layers are lists within a list [idx_task]
             # create [idx_task] list and add att filter for bottleneck's single layer
             self.bottleneck_att.append(
-                nn.ModuleList([AttBlock([2 * filters[-1], filters[-1]])])
+                AttBlock(2 * filters[-1], filters[-1])
                 )
         
         # att conv block layers (shared between tasks, in accordance w MTAN)
         # single bottleneck layer
         self.bottleneck_att_conv.append(
-            ConvBlock(filters[-1], filters[-1])
+            ConvBlock(filters[-1], filters[-1], drop_prob)
             )
 
 
@@ -165,7 +166,7 @@ class AUnet(nn.Module):
         for idx_layer in reversed(range(num_pool_layers)):
             self.upsample_att_conv.append(nn.Sequential(
                 TransposeConvBlock(filters[idx_layer + 1], filters[idx_layer]),
-                ConvBlock(filters[idx_layer], filters[idx_layer]),
+                ConvBlock(filters[idx_layer], filters[idx_layer], drop_prob),
             ))
 
         for idx_task in range(self.decoder_heads):
@@ -173,14 +174,26 @@ class AUnet(nn.Module):
             # create [idx_task] list; filters follow similar pattern so not creating here
             self.upsample_att.append(nn.ModuleList())
 
-            # add all att filters at once
-            for idx_layer in reversed(range(num_pool_layers)):
+            # add all att filters except last one
+            for idx_layer in reversed(range(1, num_pool_layers)):
                 self.upsample_att[idx_task].append(
-                    AttBlock([
+                    AttBlock(
                         filters[idx_layer + 1],
                         filters[idx_layer]
-                    ])
+                    )
                 )
+
+            self.upsample_att[idx_task].append(
+                nn.Sequential(
+                    AttBlock(
+                        filters[1],
+                        filters[0]
+                    ),
+                    nn.Conv2d(filters[0], self.out_chans, kernel_size = 1, stride = 1),
+                )
+            )
+
+            
         
 
 
@@ -266,8 +279,8 @@ class AUnet(nn.Module):
                 )
 
         # bottleneck
-        g_bottleneck[0] = self.global_bottleneck(g_avgpool[-1])
-        g_bottleneck[1] = self.global_bottleneck_conv(g_bottleneck[0])
+        g_bottleneck[0] = self.global_bottleneck[0](g_avgpool[-1])
+        g_bottleneck[1] = self.global_bottleneck_conv[0](g_bottleneck[0])
         # no pooling, and global_bottleneck_conv changes channel count for global only
         
         # apply up-sampling layers
@@ -275,9 +288,9 @@ class AUnet(nn.Module):
 
             # if first layer, use bottleneck output
             if idx_layer == 0:
-                g_upsample[idx_layer][0] = self.global_upsample[idx_layer](g_bottleneck[-1])
+                g_upsample[idx_layer][0] = self.global_uptranspose[idx_layer](g_bottleneck[-1])
             else:
-                g_upsample[idx_layer][0] = self.global_upsample[idx_layer](
+                g_upsample[idx_layer][0] = self.global_uptranspose[idx_layer](
                     g_upsample[idx_layer - 1][-1]
                     )
             
@@ -295,7 +308,7 @@ class AUnet(nn.Module):
 
             # go thru convs        
             g_upsample[idx_layer][1] = self.global_upsample_conv[idx_layer](
-                # actually concat skip connection w upsampling
+                # concat skip connection w upsampling
                 torch.cat([g_upsample[idx_layer][0], downsample_layer], dim=1)
                 )
 
@@ -312,7 +325,7 @@ class AUnet(nn.Module):
                 atten_downsample[idx_layer][0] = self.downsample_att[int_contrast][idx_layer](
                     # merge att and global
                     torch.cat(
-                        (g_downsample[idx_layer][0], atten_downsample[idx_layer - 1][2]),
+                        [g_downsample[idx_layer][0], atten_downsample[idx_layer - 1][2]],
                         dim=1
                         )
                 )
@@ -332,8 +345,8 @@ class AUnet(nn.Module):
                 dim=1
                 )
         )
-        atten_bottleneck[1] = (atten_bottleneck[-1][0]) * g_bottleneck[1]
-        atten_bottleneck[2] = self.bottleneck_att_conv(
+        atten_bottleneck[1] = (atten_bottleneck[0]) * g_bottleneck[1]
+        atten_bottleneck[2] = self.bottleneck_att_conv[0](
             atten_bottleneck[1]
         )
         # no pooling bc it's bottleneck. 
@@ -342,20 +355,21 @@ class AUnet(nn.Module):
         for idx_layer in range(self.num_pool_layers):
             # if first layer, use bottleneck output
             if idx_layer == 0:
-                atten_upsample[idx_layer][0] = self.upsample_att_conv[int_contrast][idx_layer](
+                atten_upsample[idx_layer][0] = self.upsample_att_conv[idx_layer](
                     atten_bottleneck[-1]
                 )
             else:
-                atten_upsample[idx_layer][0] = self.upsample_att_conv[int_contrast][idx_layer](
+                atten_upsample[idx_layer][0] = self.upsample_att_conv[idx_layer](
                     atten_upsample[idx_layer - 1][-1]
                 )
             
-            atten_upsample[idx_layer][1] = self.upsample_att[idx_layer](
+            atten_upsample[idx_layer][1] = self.upsample_att[int_contrast][idx_layer](
                 torch.cat(
-                    (g_upsample[idx_layer], atten_upsample[idx_layer][0]),
+                    (g_upsample[idx_layer][0], atten_upsample[idx_layer][0]),
                     dim=1,
                 )
             )
+            
             atten_upsample[idx_layer][2] = (atten_upsample[idx_layer][1]) * g_upsample[idx_layer][-1]
 
         return atten_upsample[-1][-1]

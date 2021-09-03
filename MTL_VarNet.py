@@ -165,8 +165,8 @@ opt = parser.parse_args()
 
 # validation of user inputs
 for structure in opt.blockstructures:
-    assert structure in ['trueshare', 'mhushare', 'split'], \
-           f'{structure} is not yet a supported block structure'
+    assert structure in ['trueshare', 'mhushare', 'split', 'attenshare'], \
+           f'unet structure is not yet a supported block structure'
 assert opt.gradaccumulation > 0; 'opt.gradaccumulation must be greater than 0'
 
 
@@ -186,7 +186,7 @@ model_name = f"models/{opt.experimentname}_" + \
     f"{'strat_' if opt.stratified else ''}" + \
     f"{opt.network}{label_blockstructures(opt.blockstructures)}_{'_'.join(opt.datasets)}/"
 if not os.path.isdir(model_name):
-    os.mkdirs(model_name)
+    os.makedirs(model_name)
 writer_tensorboard = SummaryWriter(log_dir = run_name)
 
 def main(opt):
