@@ -33,6 +33,9 @@ def single_task_trainer(
     ratio = f"N={'_N='.join(str(key) for key in train_ratios.values())}"
     best_val_loss = np.infty
 
+    # grad accumulation
+    iteration = 0
+
     for epoch in range(opt.epochs):
         # contains info for single epoch
         cost = {
@@ -202,7 +205,7 @@ def multi_task_trainer(
 
     # grad accumulation
     iteration = 0
-    contrast_batches = [0 for _ in range(len(opt.datasets))] 
+    batch_count = 0 
 
     for epoch in range(opt.epochs):
 
@@ -245,7 +248,7 @@ def multi_task_trainer(
 
             # grad accumulation 
             iteration += 1
-            contrast_batches[opt.datasets.index(contrast)] += 1
+            batch_count += 1
 
             # forward
             _, im_us, logsigma = multi_task_model(
@@ -274,12 +277,12 @@ def multi_task_trainer(
             loss.backward()
 
             # step optimizer once we've reached the right no. batches
-            if sum(contrast_batches) == opt.gradaccumulation:
+            if batch_count == opt.gradaccumulation:
                 optimizer.step()
                 optimizer.zero_grad()
                 
                 # reset contrast batches
-                contrast_batches = [0 for _ in range(len(opt.datasets))] 
+                batch_count = [0 for _ in range(len(opt.datasets))] 
 
             # losses and metrics are averaged over epoch at the end
             # L1 loss for now

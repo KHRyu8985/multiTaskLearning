@@ -52,6 +52,13 @@ parser.add_argument(
     help='type of network ie unet or varnet'
 )
 parser.add_argument(
+    '--weightsdir', default=None,
+    help='''for transfer learning, give directory for loading weights;
+    i.e. '/mnt/dense/vliu/summer_runs_models/models/STL_baselines/STL_nojoint_varnet_div_coronal_pd/N=481_l1.pt'
+    default to None because we're not usually doing transfer
+    '''
+)
+parser.add_argument(
     '--device', default='cuda:2',
     help='cuda:2 device default'
 )
@@ -170,6 +177,14 @@ def main(opt):
         # other inputs to STL wrapper
         device = torch.device(opt.device if torch.cuda.is_available() else "cpu")
         varnet = STL_VarNet(opt.numblocks).to(device)
+
+        # load weights if doing transfer learning
+        if opt.weightsdir:
+            varnet.load_state_dict(torch.load(
+                opt.weightsdir, 
+                map_location = device,
+                )
+            )
 
         optimizer = torch.optim.Adam(varnet.parameters(),lr = opt.lr)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=200, gamma=0.5)
