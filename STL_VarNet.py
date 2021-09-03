@@ -40,6 +40,16 @@ parser.add_argument(
     '--lr', default=0.0002, type=float,
     help='learning rate'
 )
+parser.add_argument(
+    '--gradaccumulation', default=1, type=int,
+    help='how many iterations per gradient accumulation; cannot be less than 1'
+)
+parser.add_argument(
+    '--gradaverage', default=0, type=int,
+    help='''if true, will average accumulated grads before optimizer.step
+    if false, gradaccumulation will occur without averaging (i.e. no hooks)
+    value does not matter if gradaccumulation is equal to 1'''
+)
 
 
 # model training

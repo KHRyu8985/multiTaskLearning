@@ -169,6 +169,7 @@ for structure in opt.blockstructures:
            f'unet structure is not yet a supported block structure'
 assert opt.gradaccumulation > 0; 'opt.gradaccumulation must be greater than 0'
 
+assert opt.weighting in ['naive', 'uncert', 'dwa'], f'weighting method not yet supported'
 
 """
 =========== run/model name ============
