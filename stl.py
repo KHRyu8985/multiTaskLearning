@@ -121,6 +121,19 @@ parser.add_argument(
     )
 
 parser.add_argument(
+    '--stratified', default=0, type=int,
+    help='''if true, stratifies the dataloader'''
+)
+
+parser.add_argument(
+    '--stratifymethod', default='upsample',
+    help='''
+    one of [upsample, downsample] for
+    scarce, abundant dataset, respectively
+    does not matter if --stratified is false'''
+)
+
+parser.add_argument(
     '--numworkers', default=16, type=int,
     help='number of workers for PyTorch dataloader'
 )

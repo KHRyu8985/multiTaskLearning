@@ -1,26 +1,78 @@
+"""Docstring for the dloader.py module.
+
+Custom data loader for MRI data.
+
+Contains two classes (MRIDataset and balancedSampler)
+that are called by the function genDataLoader to create
+a dataloader in accordance with user-defined properties.
+"""
+
+import os
+import pathlib 
+# pathlib is a good library for reading files in a nested folders
+from typing import Iterator
+import h5py
 import numpy as np
 import sigpy as sp
-import os
-import h5py
-import pathlib  # pathlib is a good library for reading files in a nested folders
 
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data import Sampler
-from typing import Iterator
-
 import torch
 
-import fastmri  # We will also use fastmri library
-# use for generating undersampling mask, transforming tensors
+import fastmri 
+# used for generating undersampling mask, transforming tensors
 from fastmri.data import subsample, transforms
 
-# This is how you can make a custom dataset class
-
 class MRIDataset(Dataset):
-    '''
+    """Summarize the function in one line.
+
+    Several sentences providing an extended description. Refer to
+    variables using back-ticks, e.g. `var`.
+
+    Parameters
+    ----------
+    var1 : array_like
+        Array_like means all those objects -- lists, nested lists, etc. --
+        that can be converted to an array.  We can also refer to
+        variables like `var1`.
+    var2 : int
+        The type above can either refer to an actual Python type
+        (e.g. ``int``), or describe the type of the variable in more
+        detail, e.g. ``(N,) ndarray`` or ``array_like``.
+    *args : iterable
+        Other arguments.
+    long_var_name : {'hi', 'ho'}, optional
+        Choices in brackets, default first when optional.
+    **kwargs : dict
+        Keyword arguments.
+
+    Attributes
+    ----------
+    x : float
+        The X coordinate.
+    y : float
+        The Y coordinate.
     self.ratios: dict of number of slices per contrast
     self.slices: list of number of slices in each MRI, in order from root
-    '''
+
+    Returns
+    -------
+    type
+        Explanation of anonymous return value of type ``type``.
+    describe : type
+        Explanation of return value named `describe`.
+    out : type
+        Explanation of `out`.
+    type_without_description
+
+    Other Parameters
+    ----------------
+    only_seldom_used_keywords : type
+        Explanation.
+    common_parameters_listed_above : type
+        Explanation.
+
+    """
 
     def __init__(
         self, roots, scarcities, seed,
@@ -52,7 +104,6 @@ class MRIDataset(Dataset):
                 self.slices.append(nsl - 1)
 
             self.ratios[contrast] = file_count
-            
         center_fractions, accelerations = self.combine_cenfrac_acc(
             center_fractions, accelerations,
             )    
@@ -139,10 +190,10 @@ class MRIDataset(Dataset):
         return masked_kspace, mask.byte(), esp_maps, im_true, contrast
 
 
-# BalancedSampler code modified from kaggle #
+# balancedSampler code modified from kaggle #
 # https://www.kaggle.com/shonenkov/class-balance-with-pytorch-xla #
 
-class BalancedSampler(Sampler):
+class balancedSampler(Sampler):
     """
     Abstraction over data sampler.
     Allows you to create stratified sample on unbalanced classes.
@@ -254,7 +305,7 @@ def genDataLoader(
         )
     # only for beginning of training
     if stratified:
-        sampler = BalancedSampler(
+        sampler = balancedSampler(
             labels = dset.contrast_labels(),
             method = method,
         )

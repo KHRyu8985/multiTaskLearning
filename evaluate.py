@@ -26,7 +26,6 @@ from utils import plot_quadrant
 from utils import interpret_blockstructures
 
 ### add to this every time new model is trained ###
-from models_backcompat import MTL_VarNet_backcompat
 from models import STL_VarNet
 from models import MTL_VarNet
         
@@ -35,33 +34,9 @@ parser = argparse.ArgumentParser(
     description = 'define parameters and roots for STL training'
 )
 
-# model stuff
-# backcompat stuff
-parser.add_argument(
-    '--backcompat', type=int, nargs='+',
-    help='''whether to use back-compatible model
-    with begin_blocks and shared_blocks and num_cascades
-    arguments''',
-    required = True,
-)
-
-# backcompat / STL stuff (don't delete)
+# STL stuff (don't delete)
 parser.add_argument(
     '--numblocks', default = [], type=int, nargs = '+',
-    help='''number of unrolled blocks in total for one forward pass;
-    match to each experimentnames''',
-)
-
-# backcompat stuff
-parser.add_argument(
-    '--beginblocks', default = [], type=int, nargs = '+',
-    help='''number of unrolled blocks in total for one forward pass;
-    match to each experimentnames''',
-)
-
-# backcompat stuff
-parser.add_argument(
-    '--sharedblocks', default = [], type=int, nargs = '+',
     help='''number of unrolled blocks in total for one forward pass;
     match to each experimentnames''',
 )
@@ -108,7 +83,7 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    '--modeldir', default='/../../mnt/dense/vliu/models/',
+    '--modeldir', default='/../../mnt/dense/vliu/neurips/models/',
     help='models root directory; where are pretrained models are'
 )
 ############## required ##############
@@ -128,7 +103,7 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    '--device', default='cuda:2',
+    '--device', default='cuda:2', nargs='+',
     help='cuda:2 device default'
 )
 
@@ -172,7 +147,7 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    '--colors', default = ['Category10_10'], nargs = '+',
+    '--colors', default = ['Category20c_20'], nargs = '+',
     help='''Category20_10, Category20c_20, Paired10, Set1_8, Set2_8, Colorblind8, Category10_10
     https://docs.bokeh.org/en/latest/docs/reference/palettes.html#bokeh-palette
     OR
@@ -197,7 +172,7 @@ parser.add_argument(
 
 parser.add_argument(
     '--showbest', default=0, type=int,
-    help='''if true, shows best metric / loss out of all runs; fails for STL_nojoint'''
+    help='''if true, shows best metric / loss out of all runs; manually created'''
 )
 
 parser.add_argument(
@@ -255,8 +230,8 @@ def _initialize_plots(opt):
 
     plots = [
         bokeh.plotting.figure(
-            width = 900,
-            height = 350,
+            width = 1100,
+            height = 600,
             x_axis_label = x_axis_label,
             y_axis_label = opt.plotnames[i],
             tooltips=[
@@ -327,7 +302,7 @@ def _plot_baselines(plots, opt):
     #scarce
     scarce_path = Path(os.path.join(
         opt.modeldir, 
-        'STL_baselines',
+        # 'STL_baselines',
         f"STL_{opt.baselinenetwork}_{'_'.join(opt.datasets)}", 
         f'summary_{opt.datasets[0]}.csv',
     ))
@@ -335,7 +310,7 @@ def _plot_baselines(plots, opt):
     # abundant
     abundant_path = Path(os.path.join(
         opt.modeldir,
-        'STL_baselines',
+        # 'STL_baselines',
         f'STL_nojoint_{opt.baselinenetwork}_{opt.datasets[1]}', 
         f'summary_{opt.datasets[1]}.csv'
     ))
@@ -434,7 +409,7 @@ def df_single_contrast_all_models(
             # load model
             the_model.load_state_dict(torch.load(
                 model_filepath, 
-                map_location = opt.device,
+                map_location = opt.device[0],
                 )
             )
             the_model.eval()
@@ -448,8 +423,8 @@ def df_single_contrast_all_models(
                 for idx_slice in range(nsl):
                     kspace, mask, esp_maps, im_fs, contrast = next(test_dataset)
                     contrast = contrast[0]
-                    kspace, mask = kspace.to(opt.device), mask.to(opt.device)
-                    esp_maps, im_fs = esp_maps.to(opt.device), im_fs.to(opt.device)
+                    kspace, mask = kspace.to(opt.device[0]), mask.to(opt.device[0])
+                    esp_maps, im_fs = esp_maps.to(opt.device[0]), im_fs.to(opt.device[0])
 
                     # forward pass
                     if 'STL' in model_filepath:
@@ -551,39 +526,20 @@ def _get_model_info(dataset, opt, idx_experimentname):
         with torch.no_grad():
             the_model = STL_VarNet(
                 num_cascades = opt.numblocks[idx_experimentname],
-                ).to(opt.device)
+                ).to(opt.device[0])
                 
     elif 'MTL' in opt.experimentnames[idx_experimentname]:
         ### remember to change the inputs manually
-        # v1
-        if opt.backcompat[idx_experimentname]:
-            with torch.no_grad():
-                the_model = MTL_VarNet_backcompat(
-                    datasets = opt.datasets,
-                    num_cascades = opt.numblocks[idx_experimentname],
-                    # begin_blocks = opt.beginblocks[idx_experimentname],
-                    shared_blocks = opt.sharedblocks[idx_experimentname],
-                    ).to(opt.device)
-        # v3
-        elif opt.backcompat[idx_experimentname]:
-            with torch.no_grad():
-                the_model = MTL_VarNet_backcompat(
-                    datasets = opt.datasets,
-                    blockstructures = interpret_blockstructures(
-                        opt.blockstructures[idx_experimentname]
-                        ),
-                    share_etas = opt.shareetas[idx_experimentname],
-                    ).to(opt.device)
-    
-        else:
-            with torch.no_grad():
-                the_model = MTL_VarNet(
-                    datasets = opt.datasets,
-                    blockstructures = interpret_blockstructures(
-                        opt.blockstructures[idx_experimentname]
-                        ),
-                    share_etas = opt.shareetas[idx_experimentname],
-                    ).to(opt.device)
+        with torch.no_grad():
+            the_model = MTL_VarNet(
+                datasets = opt.datasets,
+                blockstructures = interpret_blockstructures(
+                    opt.blockstructures[idx_experimentname]
+                    ),
+                share_etas = opt.shareetas[idx_experimentname],
+                device = opt.device,
+                training = False,
+                )
     
     else:
         raise ValueError(f'{opt.experimentnames[idx_experimentname]} not valid')
