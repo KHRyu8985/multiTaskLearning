@@ -25,14 +25,14 @@ parser = argparse.ArgumentParser(
 # which runs to investigate for prematurely stopped runs
 parser.add_argument(
     '--runnames', nargs = '+',
-    help='''which runs to investigate for prematurely stopped runs; 
-        i.e. MTL_dwa_varnet0:10_div_coronal_pd_fs_div_coronal_pd''',
+    help="""which runs to investigate for prematurely stopped runs; 
+        i.e. MTL_dwa_varnet0:10_div_coronal_pd_fs_div_coronal_pd""",
     required = True,
 )
 
 parser.add_argument(
     '--rundir',
-    help='''directory of runs''',
+    help="""directory of runs""",
     required = True,
 )
 
