@@ -3,7 +3,6 @@
 Custom data loader for MRI data.
 
 """
-
 import os
 import pathlib 
 # pathlib is a good library for reading files in a nested folders
@@ -19,7 +18,7 @@ import torch
 import fastmri 
 # used for generating undersampling mask, transforming tensors
 from fastmri.data import subsample, transforms
-
+from poisson_subsample import PoissonDiskMaskFunc
 class MRIDataset(Dataset):
     """Creates custom dataloader for specified data.
 
@@ -78,7 +77,7 @@ class MRIDataset(Dataset):
     def __init__(
         self, roots, scarcities, seed,
         center_fractions, accelerations,
-        use_same_mask = False,
+        use_same_mask = False, mask_type='poisson'
     ):
         self.rng = np.random.default_rng(seed)
         # where dataset references are stored
@@ -89,7 +88,18 @@ class MRIDataset(Dataset):
         self.slices = []
         for idx, root in enumerate(roots):
             task = root.split('/')[-2]
+            train_val = root.split('/')[-1]
             Files = sorted(list(pathlib.Path(root).glob('*.h5')))
+
+            #### Terrible solution but needed to make
+            #### subsets the same for STL and MTL.
+            #### If we don't do this, a different subset
+            #### will be selected for STL due to the rng states.
+            #### We execute the following just to advance the rng state.
+            if idx == 0 and task == 'shoulder' and train_val == 'Train':
+                pp = '/'.join(root.split('/')[:-2] + ['ankle_elbow', 'Train'])
+                fp = sorted(list(pathlib.Path(pp).glob('*.h5')))
+                _ = self.subset_sample(fp, 1)
 
             # subsample files
             Files = self.subset_sample(Files, scarcities[idx])
@@ -108,9 +118,14 @@ class MRIDataset(Dataset):
         center_fractions, accelerations = self.combine_cenfrac_acc(
             center_fractions, accelerations,
             )    
-        self.mask_func = subsample.EquispacedMaskFunc(
-            center_fractions=center_fractions, accelerations=accelerations
-        )
+        if mask_type == 'equi':
+            self.mask_func = subsample.EquispacedMaskFunc(
+                center_fractions=center_fractions, accelerations=accelerations
+            )
+        elif mask_type == 'poisson':
+            self.mask_func = PoissonDiskMaskFunc(
+                center_fractions=center_fractions, accelerations=accelerations
+            )
         self.use_same_mask = use_same_mask
 
     def __len__(self):
@@ -119,7 +134,7 @@ class MRIDataset(Dataset):
     def __getitem__(self, idx):
         fname, sl, task = self.examples[idx]
         with h5py.File(fname, 'r') as hr:
-            kspace, esp_maps = hr['kspace'][sl], hr['esp_maps'][sl]
+            kspace, esp_maps = hr['kspace'][sl], hr['sens'][sl]
         esp_maps = np.complex64(esp_maps)
         kspace = kspace / 10  # divide by 10 because the values are too large
         im_coil = sp.ifft(kspace, axes=[1, 2])
@@ -144,9 +159,9 @@ class MRIDataset(Dataset):
         im_true = transforms.to_tensor(im_true)
 
         # crop to center to get rid of coil artifacts from sensitivity maps
-        im_true = transforms.complex_center_crop(im_true, (360, 320))
+#        im_true = transforms.complex_center_crop(im_true, (360, 320))
 
-        return masked_kspace, mask.byte(), esp_maps, im_true, task    
+        return masked_kspace, mask.byte(), esp_maps, im_true, task
 
     def subset_sample(self, Files, scarcity):
         """Decreases the number of Files by 1/2^{scarcity} pseudorandomly.
@@ -202,9 +217,6 @@ class MRIDataset(Dataset):
                 )
             start_idx += task_count
         return labels
-
-
-
 
 class balancedSampler(Sampler):
     """Abstraction over data sampler to create stratified sampler
@@ -317,7 +329,7 @@ def genDataLoader(
     center_fractions, accelerations,
     shuffle, num_workers, seed=333,
     stratified = False, method = 'upsample',
-    use_same_mask = False,
+    use_same_mask = False, mask_type = 'poisson'
 ):
     """Official Torch DataLoader building off of MRIDataset.
 
@@ -342,7 +354,8 @@ def genDataLoader(
     use_same_mask : bool, default False
         Typically used for evaluation, where it may be good to have the 
         same pseudorandom masks for all evaluation samples.
-
+    mask_type : str, default poisson (equi, poisson)
+        Type of undersampling mask (either can be equidistance or poisson)
     Returns
     -------
     DataLoader : Torch Dataloader
@@ -372,7 +385,7 @@ def genDataLoader(
     dset = MRIDataset(
         roots = roots, scarcities = scarcities, seed = seed, 
         center_fractions = center_fractions, accelerations = accelerations,
-        use_same_mask = use_same_mask,
+        use_same_mask = use_same_mask, mask_type=mask_type
         )
     # only for beginning of training
     if stratified:

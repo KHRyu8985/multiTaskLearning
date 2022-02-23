@@ -29,7 +29,7 @@ from utils import label_blockstructures, plot_quadrant, write_tensorboard
 def single_task_trainer(
     train_loader, val_loader,
     train_ratios, val_ratios,
-    single_task_model, 
+    single_task_model,
     device, writer,
     optimizer, scheduler,
     opt
@@ -101,14 +101,14 @@ def single_task_trainer(
         train_dataset = iter(train_loader)
 
         # grad accumulation
-        optimizer.zero_grad() 
+        optimizer.zero_grad()
 
         for kspace, mask, esp, im_fs, task in train_dataset:
             task = task[0] # torch dataset loader returns as tuple
             kspace, mask = kspace.to(device), mask.to(device)
             esp, im_fs = esp.to(device), im_fs.to(device)
 
-            # grad accumulation 
+            # grad accumulation
             iteration += 1
             batch_count += 1
 
@@ -127,9 +127,9 @@ def single_task_trainer(
             if batch_count == opt.gradaccumulation:
                 optimizer.step()
                 optimizer.zero_grad()
-                
+
                 # reset task batches
-                batch_count = 0 
+                batch_count = 0
 
             # losses and metrics are averaged over epoch at the end
             # L1 loss for now
@@ -236,13 +236,16 @@ def _get_naive_weights(train_ratios, opt):
     total_slices = sum(train_ratios.values())
 
     # balance weights if not stratified; smaller datasets get larger weights
-    naive_weights = {
-        task : len(train_ratios) * (total_slices - train_ratios[task]) / total_slices
-        for task in train_ratios.keys()
-    }
+    if len(train_ratios) == 1:
+        naive_weights = {task : 1. for task in train_ratios.keys()}
+    else:
+        naive_weights = {
+            task : len(train_ratios) * (total_slices - train_ratios[task]) / total_slices
+            for task in train_ratios.keys()
+        }
     return naive_weights
 
-           
+
 
 """
 =========== Universal Multi-task Trainer ===========
@@ -260,7 +263,7 @@ def multi_task_trainer(
     """Wrapper for multi task learning training.
 
     Takes care of:
-    - loss weighting (naive, DWA, uncert)
+    - loss weighting (naive, DWA, uncert, same)
     - saving best validation model
     - forward pass and backward propagation
     - gradient accumulation / averaging, is specified in opt
@@ -312,7 +315,7 @@ def multi_task_trainer(
 
     # grad accumulation
     iteration = 0
-    batch_count = 0 
+    batch_count = 0
 
     for epoch in range(opt.epochs):
 
@@ -330,12 +333,12 @@ def multi_task_trainer(
                     w.append(cost_prev[dataset][0] / cost_prevprev[dataset][0])
 
                 softmax_sum = np.sum([
-                    np.exp(w[idx_dataset] / opt.temp) 
+                    np.exp(w[idx_dataset] / opt.temp)
                     for idx_dataset in range(len(opt.datasets))
                 ])
                 for idx_dataset, dataset in enumerate(opt.datasets):
                     weights[dataset] = task_count * np.exp(w[idx_dataset] / opt.temp) / softmax_sum
-    
+
 
         # contains info for current epoch:
         cost = {
@@ -349,12 +352,12 @@ def multi_task_trainer(
         train_dataset = iter(train_loader)
 
         # grad accumulation
-        optimizer.zero_grad() 
+        optimizer.zero_grad()
 
         for kspace, mask, esp, im_fs, task in train_dataset:
             task = task[0] # torch dataset loader returns as tuple
 
-            # grad accumulation 
+            # grad accumulation
             iteration += 1
             batch_count += 1
 
@@ -369,17 +372,21 @@ def multi_task_trainer(
             im_fs = im_fs.to(opt.device[0])
 
             # loss
-            if opt.weighting == 'naive' or opt.weighting == 'dwa':
-                loss = weights[task] * criterion(im_fs, im_us)
+            if opt.weighting == 'naive' or opt.weighting == 'dwa': # naive : num_dset1:num_dset2:num_dset3 weight
+                loss = weights[task] * criterion(im_fs, im_us) # weights size of the dataset
 
-            elif opt.weighting == 'uncert':
+            elif opt.weighting == 'same':
+                weights[task] = 1.
+                loss = criterion(im_fs, im_us)
+            
+            elif opt.weighting == 'uncert': # logsigma
                 idx_task = opt.datasets.index(task)
                 loss = 1 / (2 * torch.exp(logsigma[idx_task])) * \
                     criterion(im_fs, im_us) + \
                         logsigma[idx_task] / 2
                 # for plotting purposes
                 weights[task] = logsigma[idx_task]
-            
+
             # grad accumulation
             if opt.gradaverage:
                 loss /= opt.gradaccumulation
@@ -390,7 +397,7 @@ def multi_task_trainer(
             if batch_count == opt.gradaccumulation:
                 optimizer.step()
                 optimizer.zero_grad()
-                
+
                 # reset task batches
                 batch_count = 0 
 
@@ -415,17 +422,17 @@ def multi_task_trainer(
                 # forward pass; outputs are on opt.device[0]
                 _, im_us, logsigma = multi_task_model(
                     kspace, mask, esp, task,
-                    ) 
+                    )
 
                 # crop so im_us has same size as im_fs
-                im_us = transforms.complex_center_crop(im_us, tuple(im_fs.shape[2:4]))
+                #im_us = transforms.complex_center_crop(im_us, tuple(im_fs.shape[2:4]))
                 # bring im_fs to the same device as im_us
                 im_fs = im_fs.to(opt.device[0])
                 loss = criterion(im_fs, im_us)
 
                 # losses and metrics are averaged over epoch at the end
                 # L1 loss for now
-                cost[task][4] += loss.item() 
+                cost[task][4] += loss.item()
 
                 # ssim, psnr, nrmse
                 for j in range(3):
@@ -434,7 +441,7 @@ def multi_task_trainer(
                # visualize reconstruction every few epochs
                 if opt.tensorboard and epoch % opt.savefreq == 0: ###opt###
                     # if single task, only visualize 17th slice
-                    if (val_idx == 17 or val_idx == val_batch - 17):
+                    if (val_idx == 17 or val_idx == val_batch //2 + 20 or val_idx == val_batch - 17):
                         writer.add_figure(
                             f'{ratio}/{task}',
                             plot_quadrant(im_fs, im_us),

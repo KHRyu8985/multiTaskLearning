@@ -16,17 +16,17 @@ from varnet import NormUnet
 
 
 """
-=========== VARNET_BLOCK STL vs MTL============
+=========== MoDL_BLOCK STL vs MTL============
 difference between STL vs MTL block arises 
 from splitting of etas / need to pass in task for MTL
 """
 
-class VarNetBlockSTL(nn.Module):
+class MoDLBlockSTL(nn.Module):
     """One unrolled block for STL.
 
     This model applies a combination of soft data consistency with the input
     model as a regularizer. A series of these blocks can be stacked to form
-    the full variational network.
+    the full MoDL network.
 
     Initialization parameters
     -------------------------
@@ -60,8 +60,8 @@ class VarNetBlockSTL(nn.Module):
         super().__init__()
 
         self.model = model
-        self.eta = nn.Parameter(torch.ones(1))
-        
+        self.eta = nn.Parameter(torch.ones(1)) * 0.05
+
 
     def sens_expand(self, x: torch.Tensor, sens_maps: torch.Tensor) -> torch.Tensor:
         """Expand single-channel image into multi-channel images
@@ -89,16 +89,15 @@ class VarNetBlockSTL(nn.Module):
     ) -> torch.Tensor:
 
         mask = mask.bool()
-        zero = torch.zeros(1, 1, 1, 1, 1).to(current_kspace)
-        soft_dc = torch.where(mask, current_kspace - ref_kspace, zero) * self.eta
         model_term = self.sens_expand(
             self.model(self.sens_reduce(current_kspace, sens_maps)), 
             sens_maps
         )
+        out = torch.where(mask, (self.eta * model_term + ref_kspace) / (1+self.eta), model_term)
 
-        return current_kspace - soft_dc - model_term
+        return out
 
-class VarNetBlockMTL(nn.Module):
+class MoDLBlockMTL(nn.Module):
     """One unrolled block for STL.
 
     This model applies a combination of soft data consistency with the input
@@ -157,7 +156,7 @@ class VarNetBlockMTL(nn.Module):
         eta_count = 1 if share_etas else len(datasets)
 
         self.etas = nn.ParameterList(
-            nn.Parameter(torch.ones(1))
+            nn.Parameter(torch.ones(1) * 0.05)
             for _ in range(eta_count)
             )
 
@@ -187,12 +186,9 @@ class VarNetBlockMTL(nn.Module):
     ) -> torch.Tensor:
   
         mask = mask.bool()
-        zero = torch.zeros(1, 1, 1, 1, 1).to(current_kspace)
 
         # dc eta
         idx_eta = 0 if self.share_etas else int_task
-        soft_dc = torch.where(mask, current_kspace - ref_kspace, zero) * self.etas[idx_eta]
-
         # regularization step (i.e. UNet)
         idx_model = 0 if self.share_blocks else int_task
         model_term = self.sens_expand(
@@ -202,22 +198,22 @@ class VarNetBlockMTL(nn.Module):
                 ), 
                 sens_maps
         )
+        out = torch.where(mask, (self.etas[idx_eta] * model_term + ref_kspace) / (1+self.etas[idx_eta]), model_term)
 
-        return current_kspace - soft_dc - model_term
-
+        return out
 
 
 """
-=========== STL_VARNET ============
+=========== STL_MoDL ============
 """
 
     
-# now we can stack VarNetBlocks to make a unrolled VarNet (with 10 blocks)
-class STL_VarNet(nn.Module):
+# now we can stack MoDLBlocks to make a unrolled MoDL (with 10 blocks)
+class STL_MoDL(nn.Module):
     """Full variational STL network model.
 
     This model applies a combination of soft data consistency with a U-Net
-    regularizer. To use non-U-Net regularizers, use VarNetBock.
+    regularizer. To use non-U-Net regularizers, use MoDLBock.
 
     Initialization Parameters
     -------------------------
@@ -253,13 +249,13 @@ class STL_VarNet(nn.Module):
     def __init__(
         self,
         num_cascades: int,
-        chans: int = 18,
-        pools: int = 4,
+        chans: int = 16,
+        pools: int = 3,
     ):
         super().__init__()
 
         self.cascades = nn.ModuleList(
-            [VarNetBlockSTL(STLNormUnet(chans, pools)) for _ in range(num_cascades)]
+            [MoDLBlockSTL(STLNormUnet(chans, pools)) for _ in range(num_cascades)]
         )
         
     def forward(
@@ -274,25 +270,26 @@ class STL_VarNet(nn.Module):
         for cascade in self.cascades:
             kspace_pred = cascade(kspace_pred, masked_kspace, mask, sens_maps)
         
+        # fastmri.rss(fastmri.complex_abs(fastmri.ifft2c(kspace_pred)), dim=1)
         im_coil = fastmri.ifft2c(kspace_pred)
         im_comb = fastmri.complex_mul(im_coil, fastmri.complex_conj(sens_maps)).sum(
             dim=1, keepdim=True
         )
-        
+
         return kspace_pred, im_comb
 
 
 
 
 """
-=========== MTL_VarNet ============
+=========== MTL_MoDL ============
 """
 
-class MTL_VarNet(nn.Module):
+class MTL_MoDL(nn.Module):
     """Full variational MTL network model.
 
     This model applies a combination of soft data consistency with a U-Net
-    regularizer. To use non-U-Net regularizers, use VarNetBock.
+    regularizer. To use non-U-Net regularizers, use MoDLBock.
     Multi-task learning architecture is constructed according to user input.
 
     Currently, use must manually comment in / out the evaluation portion for
@@ -345,8 +342,8 @@ class MTL_VarNet(nn.Module):
         blockstructures: list,
         share_etas: bool,
         device: list,
-        chans: int = 18,
-        pools: int = 4,
+        chans: int = 16,
+        pools: int = 3,
         training = True,
     ):
         super().__init__()
@@ -362,28 +359,28 @@ class MTL_VarNet(nn.Module):
 
         for blockstructure in blockstructures:
             if blockstructure == 'trueshare':
-                self.unrolled.append(VarNetBlockMTL(
+                self.unrolled.append(MoDLBlockMTL(
                     NormUnet(chans, pools, which_unet = 'trueshare',), 
                     datasets,
                     share_etas = share_etas,
                 ))
             
             elif blockstructure == 'mhushare':
-                self.unrolled.append(VarNetBlockMTL(
+                self.unrolled.append(MoDLBlockMTL(
                     NormUnet(chans, pools, which_unet = 'mhushare', task_count = len(datasets),), 
                     datasets,
                     share_etas = share_etas,
                 ))
             
             elif blockstructure == 'attenshare':
-                self.unrolled.append(VarNetBlockMTL(
+                self.unrolled.append(MoDLBlockMTL(
                     NormUnet(chans, pools, which_unet = 'attenshare', task_count = len(datasets),), 
                     datasets,
                     share_etas = share_etas,
                 ))
 
             elif blockstructure == 'split':
-                self.unrolled.append(VarNetBlockMTL(
+                self.unrolled.append(MoDLBlockMTL(
                     NormUnet(chans, pools, which_unet = 'split',), 
                     datasets,
                     share_etas = share_etas,
@@ -465,7 +462,7 @@ class MTL_VarNet(nn.Module):
                     kspace_pred, masked_kspace, mask, esp_maps, 
                     int_task = int_task,
                 )
-            
+
             # go to first gpu
             kspace_pred, masked_kspace = kspace_pred.to(self.device[0]), masked_kspace.to(self.device[0])
             mask, esp_maps = mask.to(self.device[0]), esp_maps.to(self.device[0])
@@ -486,10 +483,9 @@ class MTL_VarNet(nn.Module):
                 )
 
         # training always ends on first gpu; important for loss functions
-        
+        #im_comb = fastmri.rss(fastmri.complex_abs(fastmri.ifft2c(kspace_pred)), dim=1)
         im_coil = fastmri.ifft2c(kspace_pred)
         im_comb = fastmri.complex_mul(im_coil, fastmri.complex_conj(esp_maps)).sum(
             dim=1, keepdim=True
         )
-        
         return kspace_pred, im_comb, self.logsigmas

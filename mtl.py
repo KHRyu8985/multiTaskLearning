@@ -4,6 +4,9 @@ This is the user-facing module for MTL training.
 Run this module from the command line, and pass in the
 appropriate arguments to define the model and data.
 """
+# Run like this example: python mtl.py --datasets ankle_elbow shoulder wrist --weighting naive --blockstructures mhushare mhushare mhushare mhushare mhushare mhushare mhushare mhushare mhushare mhushare --epochs 10 --experimentname MHUSHARE_ALL --device cuda:0 --scarcities 1 1 0 --savefreq 1
+# ---- Jan 21 : Added Poisson 1D random sampling
+# Run like this example: python mtl.py --datasets ankle_elbow shoulder wrist --weighting naive --blockstructures mhushare mhushare mhushare mhushare mhushare mhushare mhushare mhushare mhushare mhushare --epochs 10 --experimentname MHUSHARE_ALL --device cuda:0 --scarcities 1 1 0 --savefreq 1 --mask_type poisson
 
 import argparse
 import json
@@ -22,8 +25,8 @@ from utils import label_blockstructures
 """
 =========== Model ============
 """
+from models_v2 import MTL_MoDL
 from models import MTL_VarNet
-
 
 """
 =========== command line parser ============
@@ -75,8 +78,17 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    '--network', default='varnet',
-    help='type of network ie unet or varnet'
+    '--network', default='modl', type=str,
+    help="""Defines types of network (varnet or modl)
+    """
+    )
+
+parser.add_argument(
+    '--weightsdir', default=None, type=str,
+    help="""for transfer learning, give directory for loading weights;
+    i.e. 'models/STL_SPLIT_modlVVVVVVVV_ankle_elbow/N=578_l1.pt'
+    default to None because we're not usually doing transfer learning
+    """
 )
 
 parser.add_argument(
@@ -97,8 +109,8 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    '--device', nargs='+', default=['cuda:2'],
-    help='cuda:2 device default'
+    '--device', nargs='+', default=['cuda:0'],
+    help='cuda:0 device default'
 )
 
 
@@ -110,22 +122,22 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    '--datadir', default='/mnt/dense/vliu/summer_dset/',
+    '--datadir', default='/scratch/users/calkan/datasets/MTLData',
     help='data root directory; where are datasets contained'
 )
 
 parser.add_argument(
-    '--scarcities', default=[0, 1, 2, 3], type=int, nargs='+',
-    help='number of samples in second task will be decreased by 1/2^N; i.e. 0 1 2'
+    '--scarcities', default=[1, 2, 3], type=int, nargs='+',
+    help='number of samples in second task will be decreased by 1/2^N; i.e. 1 2 3'
     )
 
 parser.add_argument(
-    '--accelerations', default=[5, 6, 7], type=int, nargs='+',
+    '--accelerations', default=[6], type=int, nargs='+',
     help='list of undersampling factor of k-space for training; validation is average acceleration '
     )
 
 parser.add_argument(
-    '--centerfracs', default=[0.05, 0.06, 0.07], type=int, nargs='+',
+    '--centerfracs', default=[0.05], type=int, nargs='+',
     help='list of center fractions sampled of k-space for training; val is average centerfracs'
     )
 
@@ -165,6 +177,10 @@ parser.add_argument(
     '--savefreq', default=10, type=int,
     help='how many epochs per saved recon image'
 )
+parser.add_argument(
+    '--mask_type', default='poisson', type=str,
+    help='type of mask used for undersampling (poisson or equi)'
+)
 
 opt = parser.parse_args()
 
@@ -174,13 +190,13 @@ for structure in opt.blockstructures:
            f'unet structure is not yet a supported block structure'
 assert opt.gradaccumulation > 0; 'opt.gradaccumulation must be greater than 0'
 
-assert opt.weighting in ['naive', 'uncert', 'dwa'], f'weighting method not yet supported'
+assert opt.weighting in ['naive', 'uncert', 'dwa', 'same'], f'weighting method not yet supported'
 
 
 
 """
 =========== Runs ============
-"""    
+"""
 
 def main(opt):
     """Calls wrappers.py for training
@@ -191,63 +207,87 @@ def main(opt):
     Parameters
     ----------
     opt : argparse.ArgumentParser
-        Refer to help documentation above.
-    
+        Refer to help documentation abov
     Returns
     -------
     None
 
     See Also
     --------
-    multi_task_trainer from wrappers.py
-    
+    multi_task_trainer from wrappers.
     """
     basedirs = [
         os.path.join(opt.datadir, dataset)
-        for dataset in opt.datasets
-    ]
-    
+        for dataset in opt.datasets]
+
     for scarcity in opt.scarcities:
         print(f'experiment w scarcity {scarcity}')
+
+        if len(opt.datasets) == 1:
+            scarcity_list = [scarcity] # downsample
+        else:
+            scarcity_list = [1, scarcity, 0] # downsample
+
         train_dloader = genDataLoader(
             [f'{basedir}/Train' for basedir in basedirs],
-            [scarcity, 0], # downsample
+            scarcity_list, # downsample
             center_fractions = opt.centerfracs,
             accelerations = opt.accelerations,
             shuffle = True,
             num_workers= opt.numworkers,
-            stratified = opt.stratified, method = opt.stratifymethod
+            stratified = opt.stratified, method = opt.stratifymethod, mask_type = opt.mask_type
         )
 
         val_dloader = genDataLoader(
             [f'{basedir}/Val' for basedir in basedirs],
-            [0, 0], # no downsampling
+            [0 for _ in opt.datasets], # no downsampling
             center_fractions = [np.mean(opt.centerfracs)],
             accelerations = [int(np.mean(opt.accelerations))],
             shuffle = False, # no shuffling to allow visualization
-            num_workers= opt.numworkers,
+            num_workers= opt.numworkers, mask_type = opt.mask_type 
         )
         print('generated dataloaders')
 
         # other inputs to MTL wrapper
-        varnet = MTL_VarNet(
-            opt.datasets,
-            opt.blockstructures,
-            opt.shareetas,
-            opt.device,
+        if opt.network == 'modl':
+            network = MTL_MoDL(
+                opt.datasets,
+                opt.blockstructures,
+                opt.shareetas,
+                opt.device,
+                )
+        elif opt.network == 'varnet':
+            network = MTL_VarNet(
+                opt.datasets,
+                opt.blockstructures,
+                opt.shareetas,
+                opt.device,
+                )
+        
+        # load weights if doing transfer learning
+        if opt.weightsdir:
+            network.load_state_dict(torch.load(
+                opt.weightsdir, 
+                map_location = opt.device[0],
+                )
             )
+            print('loaded model from %s' % opt.weightsdir)
 
-        optimizer = torch.optim.Adam(varnet.parameters(), lr = opt.lr)
+        optimizer = torch.optim.Adam(network.parameters(), lr = opt.lr)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=200, gamma=0.5)
         print('start training')
         multi_task_trainer(
-            train_dloader[0], val_dloader[0], 
+            train_dloader[0], val_dloader[0],
             train_dloader[1], val_dloader[1], # ratios dicts
-            varnet, writer_tensorboard,
+            network, writer_tensorboard,
             optimizer, scheduler,
             opt,
-        )
+        ) 
 
+# <Update things to do>
+# TODO: update loss after zero-padding k-space to right orientation
+# TODO: calibration size fix to 0.05
+# TODO: Check images (if some is wrong)
 
 if __name__ == '__main__':
     # run / model name
@@ -266,12 +306,12 @@ if __name__ == '__main__':
     with open(
         os.path.join(run_name,'parameters.json'), 'w'
         ) as parameter_file:
-        json.dump(vars(opt), parameter_file)     
+        json.dump(vars(opt), parameter_file)
 
     with open(
         os.path.join(model_name,'parameters.json'), 'w'
         ) as parameter_file:
-        json.dump(vars(opt), parameter_file)   
+        json.dump(vars(opt), parameter_file)
 
     main(opt)
     writer_tensorboard.flush()

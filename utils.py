@@ -204,7 +204,7 @@ def plot_quadrant(im_fs: torch.Tensor, im_us: torch.Tensor):
 
     """
     fig = plt.figure()
-    plt.imshow(_test_result(im_fs, im_us), cmap = 'gray', vmax = 2.5) # or normalize between 0-1
+    plt.imshow(_test_result(im_fs, im_us), cmap = 'gray', vmax = 2) # or normalize between 0-1
     plt.close(fig)
     return fig
 
@@ -258,11 +258,112 @@ def write_tensorboard(
             _write_tensorboard_one_tasks(
                 writer, cost, iteration, ratio, opt
             )
-        else:
+        elif len(opt.datasets) == 2:
             _write_tensorboard_two_tasks(
                 writer, cost, iteration, ratio, opt, weights = weights
             )
+        else:
+            _write_tensorboard_three_tasks(
+                writer, cost, iteration, ratio, opt, weights = weights
+            )
 
+def _write_tensorboard_three_tasks(writer, cost, iteration, ratio, opt, weights):
+    """Private function that write_tensorboard calls.
+
+    Writers to tensorboard for three tasks.
+    """
+
+    task_1, task_2, task_3 = opt.datasets
+
+    writer.add_scalars(
+        f'{ratio}/l1', {
+            f'train/{task_1}' : cost[task_1][0],
+            f'val/{task_1}' : cost[task_1][4],
+            f'train/{task_2}' : cost[task_2][0],
+            f'val/{task_2}' : cost[task_2][4],
+            f'train/{task_3}' : cost[task_3][0],
+            f'val/{task_3}' : cost[task_3][4],
+        }, 
+        iteration
+    )
+
+    writer.add_scalars(
+        f'{ratio}/ssim', {
+            f'train/{task_1}' : cost[task_1][1],
+            f'val/{task_1}' : cost[task_1][5],
+            f'train/{task_2}' : cost[task_2][1],
+            f'val/{task_2}' : cost[task_2][5],
+            f'train/{task_3}' : cost[task_3][1],
+            f'val/{task_3}' : cost[task_3][5],
+        }, 
+        iteration
+    )
+
+    writer.add_scalars(
+        f'{ratio}/psnr', {
+            f'train/{task_1}' : cost[task_1][2],
+            f'val/{task_1}' : cost[task_1][6],
+            f'train/{task_2}' : cost[task_2][2],
+            f'val/{task_2}' : cost[task_2][6],
+            f'train/{task_3}' : cost[task_3][2],
+            f'val/{task_3}' : cost[task_3][6],
+        }, 
+        iteration
+    )
+
+    writer.add_scalars(
+        f'{ratio}/nrmse', {
+            f'train/{task_1}' : cost[task_1][3],
+            f'val/{task_1}' : cost[task_1][7],
+            f'train/{task_2}' : cost[task_2][3],
+            f'val/{task_2}' : cost[task_2][7],
+            f'train/{task_3}' : cost[task_3][3],
+            f'val/{task_3}' : cost[task_3][7],
+        }, 
+        iteration
+    )
+
+    writer.add_scalars(
+        'overall/l1', {
+            f'train/{ratio}' : cost['overall'][0],
+            f'val/{ratio}' : cost['overall'][4],
+        }, 
+        iteration
+    )
+
+    writer.add_scalars(
+        'overall/ssim', {
+            f'train/{ratio}' : cost['overall'][1],
+            f'val/{ratio}' : cost['overall'][5],
+        }, 
+        iteration
+    )
+
+    writer.add_scalars(
+        'overall/psnr', {
+            f'train/{ratio}' : cost['overall'][2],
+            f'val/{ratio}' : cost['overall'][6],
+        }, 
+        iteration
+    )
+
+    writer.add_scalars(
+        'overall/nrmse', {
+            f'train/{ratio}' : cost['overall'][3],
+            f'val/{ratio}' : cost['overall'][7],
+        }, 
+        iteration
+    )
+
+    if weights is not None:
+        writer.add_scalars(
+            f'{ratio}/weighting', {
+                f'{task_1}' : weights[task_1],
+                f'{task_2}' : weights[task_2],
+                f'{task_3}' : weights[task_3],
+            }, 
+            iteration
+        )
 
 def _write_tensorboard_two_tasks(writer, cost, iteration, ratio, opt, weights):
     """Private function that write_tensorboard calls.
